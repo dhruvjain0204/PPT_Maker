@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# Configuration (contains API keys)
+config.yaml
+.streamlit/secrets.toml
+
+# Output files
+output/
+PPTs/
+*.pptx
+
+# PDF files (optional - uncomment if you don't want to track PDFs)
+# *.pdf
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+

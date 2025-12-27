@@ -1,0 +1,11 @@
+llm:
+  provider: "anthropic"
+  api_key: "YOUR_ANTHROPIC_API_KEY_HERE"
+  model: "claude-sonnet-4-5-20250929"
+
+presenton:
+  api_key: "YOUR_PRESENTON_API_KEY_HERE"
+
+output:
+  directory: "./output"
+
