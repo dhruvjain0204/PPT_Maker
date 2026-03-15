@@ -36,7 +36,7 @@ def load_pdf_as_base64(pdf_path: str) -> str:
         return None
 
 
-def extract_with_llm(pdf_path: str, api_key: str) -> str:
+def extract_with_llm(pdf_path: str, api_key: str, extract_year: bool = False) -> str:
     """
     Extract text content from PDF using Claude API.
     This is the main extraction function that sends PDF to Claude and gets text back.
@@ -44,6 +44,7 @@ def extract_with_llm(pdf_path: str, api_key: str) -> str:
     Args:
         pdf_path: Path to PDF file
         api_key: Anthropic API key for authentication
+        extract_year: Whether to extract exam information from previous year question papers (default: False)
         
     Returns:
         Extracted text content as string, or None if extraction fails
@@ -68,6 +69,26 @@ def extract_with_llm(pdf_path: str, api_key: str) -> str:
         with open(pdf_path, 'rb') as f:
             pdf_bytes = f.read()
         
+        # Build extraction prompt
+        extraction_prompt = """Extract all text content from this PDF. 
+
+Please extract:
+1. All questions (ignore question numbers in PDF, just extract the question text)
+2. All options (if multiple choice)
+3. Any tables or diagrams mentioned
+4. Answers if provided"""
+        
+        # Add year extraction instruction if enabled
+        if extract_year:
+            extraction_prompt += """
+5. Exam information: If this is a previous year question paper, extract the full exam information (e.g., "[CBSE 2023 (57/1/1)]", "[CBSE Delhi 2015 [HOTS]]", "[CBSE Sample Question Paper 2024]"). Include this at the beginning of the extracted content in the format: "EXAM_INFO: [full exam information]" if found."""
+        
+        extraction_prompt += """
+
+Return the extracted content in a clear, structured format. Maintain the order of questions as they appear in the PDF.
+
+Extract all content accurately and completely."""
+        
         # Create API request to Claude
         # We send both a text prompt and the PDF document
         response = client.messages.create(
@@ -78,17 +99,7 @@ def extract_with_llm(pdf_path: str, api_key: str) -> str:
                 "content": [
                     {
                         "type": "text",  # Text instruction
-                        "text": """Extract all text content from this PDF. 
-
-Please extract:
-1. All questions (ignore question numbers in PDF, just extract the question text)
-2. All options (if multiple choice)
-3. Any tables or diagrams mentioned
-4. Answers if provided
-
-Return the extracted content in a clear, structured format. Maintain the order of questions as they appear in the PDF.
-
-Extract all content accurately and completely."""
+                        "text": extraction_prompt
                     },
                     {
                         "type": "document",  # PDF document attachment
@@ -102,9 +113,41 @@ Extract all content accurately and completely."""
             }]
         )
         
-        # Extract text from API response (first content block)
-        extracted_text = response.content[0].text
-        print("[OK] Content extracted successfully")
+        # Combine all content blocks (in case there are multiple)
+        extracted_text = ""
+        for content_block in response.content:
+            if hasattr(content_block, 'text'):
+                extracted_text += content_block.text
+        
+        # Check stop reason first - handle refusal specifically
+        if hasattr(response, 'stop_reason'):
+            if response.stop_reason == "refusal":
+                print("[WARNING] Claude API refused to process the PDF document attachment.")
+                print("[INFO] This may be due to PDF format or content policy restrictions.")
+                print("[INFO] Automatically trying alternative method: converting PDF to images...")
+                # Try image-based extraction as fallback
+                return extract_with_llm_images(pdf_path, api_key)
+            elif response.stop_reason == "max_tokens":
+                print("[WARNING] Response was truncated due to max_tokens limit!")
+                print("[WARNING] Some content may be missing. Consider increasing max_tokens or splitting the PDF.")
+            elif response.stop_reason:
+                print(f"[INFO] Response stop reason: {response.stop_reason}")
+        
+        # Validate we got content
+        if not extracted_text or len(extracted_text.strip()) < 100:
+            print("[ERROR] Extracted text is too short or empty. Response may have failed.")
+            print(f"[DEBUG] Response content blocks: {len(response.content)}")
+            if hasattr(response, 'stop_reason'):
+                print(f"[DEBUG] Stop reason: {response.stop_reason}")
+                if response.stop_reason == "refusal":
+                    print("[INFO] Trying alternative method: converting PDF to images...")
+                    return extract_with_llm_images(pdf_path, api_key, extract_year)
+            # Show actual response content for debugging
+            if extracted_text:
+                print(f"[DEBUG] Response content preview: {extracted_text[:200]}")
+            return None
+        
+        print(f"[OK] Content extracted successfully: {len(extracted_text):,} characters")
         return extracted_text
         
     except Exception as e:
@@ -117,11 +160,11 @@ Extract all content accurately and completely."""
             # PDF attachment format issue - try alternative method
             print("\n[INFO] Claude API may not support direct PDF attachments in this format.")
             print("[INFO] Trying alternative method: converting PDF to images first...")
-            return extract_with_llm_images(pdf_path, api_key)
+            return extract_with_llm_images(pdf_path, api_key, extract_year)
         return None
 
 
-def extract_with_llm_images(pdf_path: str, api_key: str) -> str:
+def extract_with_llm_images(pdf_path: str, api_key: str, extract_year: bool = False) -> str:
     """
     Alternative extraction method: Convert PDF to images and send to Claude Vision API.
     This is a fallback if direct PDF attachment doesn't work.
@@ -129,6 +172,7 @@ def extract_with_llm_images(pdf_path: str, api_key: str) -> str:
     Args:
         pdf_path: Path to PDF file
         api_key: Anthropic API key
+        extract_year: Whether to extract exam information from previous year question papers (default: False)
         
     Returns:
         Extracted text from all pages, or None if fails
@@ -148,17 +192,23 @@ def extract_with_llm_images(pdf_path: str, api_key: str) -> str:
     print("[INFO] Converting PDF to images...")
     try:
         # Convert each PDF page to a PIL Image object
-        images = convert_from_path(pdf_path)
+        # Specify Poppler path explicitly
+        poppler_path = r'C:\Poppler\poppler-25.12.0\Library\bin'
+        images = convert_from_path(pdf_path, poppler_path=poppler_path)
         print(f"[OK] Converted {len(images)} pages to images")
     except Exception as e:
-        # Conversion failed (usually Poppler not installed)
+        # Conversion failed (usually Poppler not installed or wrong path)
         print(f"[ERROR] Failed to convert PDF to images: {e}")
-        print("[INFO] Poppler may not be installed. But we can try a simpler approach...")
+        print(f"[INFO] Checked Poppler path: {poppler_path}")
+        print("[INFO] Make sure Poppler is installed and the path is correct.")
         return None
     
-    # Initialize Claude client
+    # Initialize Claude client with longer timeout for large PDFs
     print("[INFO] Sending pages to Claude Vision API...")
-    client = Anthropic(api_key=api_key)
+    client = Anthropic(
+        api_key=api_key,
+        timeout=300.0  # 5 minutes timeout for large PDFs
+    )
     all_text = []  # Store text from each page
     
     # Process each page image
@@ -182,7 +232,9 @@ def extract_with_llm_images(pdf_path: str, api_key: str) -> str:
                     "content": [
                         {
                             "type": "text",
-                            "text": f"Extract all text content from this page (page {i}). Include questions, options, tables, and any other text. Maintain formatting where possible."
+                            "text": f"Extract all text content from this page (page {i}). Include questions, options, tables, and any other text. Maintain formatting where possible." + (
+                                " If this is page 1 and contains exam information (e.g., '[CBSE 2023 (57/1/1)]', '[CBSE Delhi 2015 [HOTS]]'), include it at the beginning in format: 'EXAM_INFO: [full exam information]'." if extract_year and i == 1 else ""
+                            )
                         },
                         {
                             "type": "image",  # Image attachment
@@ -196,8 +248,16 @@ def extract_with_llm_images(pdf_path: str, api_key: str) -> str:
                 }]
             )
             
-            # Extract text from response
-            page_text = response.content[0].text
+            # Combine all content blocks (in case there are multiple)
+            page_text = ""
+            for content_block in response.content:
+                if hasattr(content_block, 'text'):
+                    page_text += content_block.text
+            
+            # Check if response was truncated
+            if hasattr(response, 'stop_reason') and response.stop_reason == "max_tokens":
+                print(f"\n[WARNING] Page {i} response was truncated due to max_tokens limit!")
+            
             # Store page text with page number marker
             all_text.append(f"\n--- PAGE {i} ---\n{page_text}\n")
             
@@ -327,6 +387,181 @@ def save_extracted_text(text: str, output_file: str):
     print(f"[OK] Extracted text saved to: {output_file}")
 
 
+def extract_with_llm_no_fallback(pdf_path: str, api_key: str, extract_year: bool = False) -> str:
+    """
+    Extract text content from PDF using Claude API (without image fallback).
+    This is the same as extract_with_llm() but returns None on error instead of
+    calling the image OCR fallback.
+    
+    Args:
+        pdf_path: Path to PDF file
+        api_key: Anthropic API key for authentication
+        extract_year: Whether to extract exam information from previous year question papers (default: False)
+        
+    Returns:
+        Extracted text content as string, or None if extraction fails
+    """
+    # Load PDF and convert to base64 for API
+    print("[INFO] Loading PDF file...")
+    pdf_base64 = load_pdf_as_base64(pdf_path)
+    
+    # Check if PDF was loaded successfully
+    if not pdf_base64:
+        return None
+    
+    # Inform user that we're sending to API (may take time)
+    print("[INFO] Sending PDF to Claude API for extraction...")
+    print("[INFO] This may take 30-60 seconds...")
+    
+    try:
+        # Initialize Anthropic client with API key
+        client = Anthropic(api_key=api_key)
+        
+        # Read PDF as binary (needed for document attachment)
+        with open(pdf_path, 'rb') as f:
+            pdf_bytes = f.read()
+        
+        # Build extraction prompt
+        extraction_prompt = """Extract all text content from this PDF. 
+
+Please extract:
+1. All questions (ignore question numbers in PDF, just extract the question text)
+2. All options (if multiple choice)
+3. Any tables or diagrams mentioned
+4. Answers if provided"""
+        
+        # Add year extraction instruction if enabled
+        if extract_year:
+            extraction_prompt += """
+5. Exam information: If this is a previous year question paper, extract the full exam information (e.g., "[CBSE 2023 (57/1/1)]", "[CBSE Delhi 2015 [HOTS]]", "[CBSE Sample Question Paper 2024]"). Include this at the beginning of the extracted content in the format: "EXAM_INFO: [full exam information]" if found."""
+        
+        extraction_prompt += """
+
+Return the extracted content in a clear, structured format. Maintain the order of questions as they appear in the PDF.
+
+Extract all content accurately and completely."""
+        
+        # Create API request to Claude
+        # We send both a text prompt and the PDF document
+        response = client.messages.create(
+            model="claude-sonnet-4-5-20250929",  # Claude model version
+            max_tokens=16000,  # Maximum response length
+            messages=[{
+                "role": "user",  # User message
+                "content": [
+                    {
+                        "type": "text",  # Text instruction
+                        "text": extraction_prompt
+                    },
+                    {
+                        "type": "document",  # PDF document attachment
+                        "source": {
+                            "type": "base64",  # Base64 encoding
+                            "media_type": "application/pdf",  # PDF MIME type
+                            "data": pdf_base64  # Base64-encoded PDF data
+                        }
+                    }
+                ]
+            }]
+        )
+        
+        # Combine all content blocks (in case there are multiple)
+        extracted_text = ""
+        for content_block in response.content:
+            if hasattr(content_block, 'text'):
+                extracted_text += content_block.text
+        
+        # Check stop reason first - handle refusal specifically
+        if hasattr(response, 'stop_reason'):
+            if response.stop_reason == "refusal":
+                print("[WARNING] Claude API refused to process the PDF document attachment.")
+                print("[INFO] This may be due to PDF format or content policy restrictions.")
+                print("[ERROR] Cannot use image fallback in no-fallback mode. Please use extract_with_llm() instead.")
+                return None
+            elif response.stop_reason == "max_tokens":
+                print("[WARNING] Response was truncated due to max_tokens limit!")
+                print("[WARNING] Some content may be missing. Consider increasing max_tokens or splitting the PDF.")
+            elif response.stop_reason:
+                print(f"[INFO] Response stop reason: {response.stop_reason}")
+        
+        # Validate we got content
+        if not extracted_text or len(extracted_text.strip()) < 100:
+            print("[ERROR] Extracted text is too short or empty. Response may have failed.")
+            print(f"[DEBUG] Response content blocks: {len(response.content)}")
+            if hasattr(response, 'stop_reason'):
+                print(f"[DEBUG] Stop reason: {response.stop_reason}")
+            # Show actual response content for debugging
+            if extracted_text:
+                print(f"[DEBUG] Response content preview: {extracted_text[:200]}")
+            return None
+        
+        print(f"[OK] Content extracted successfully: {len(extracted_text):,} characters")
+        return extracted_text
+        
+    except Exception as e:
+        # Handle API errors (no fallback to image extraction)
+        print(f"[ERROR] LLM extraction failed: {e}")
+        if "api_key" in str(e).lower() or "authentication" in str(e).lower():
+            # API key issue
+            print("\n[ERROR] API key issue. Please check your API key in config.")
+        return None
+
+
+def extract_multiple_pdfs(pdf_paths: list[str], api_key: str, extract_year: bool = False) -> tuple[str, list[tuple[str, str]]]:
+    """
+    Extract text content from multiple PDFs sequentially.
+    
+    Args:
+        pdf_paths: List of paths to PDF files
+        api_key: Anthropic API key for authentication
+        extract_year: Whether to extract exam information from previous year question papers (default: False)
+        
+    Returns:
+        Tuple of (combined_text: str, pdf_contents: list[tuple[str, str]])
+        where pdf_contents is list of (pdf_name, extracted_text) tuples
+    """
+    pdf_contents = []  # List of (pdf_name, extracted_text) tuples
+    combined_parts = []  # List of text parts to combine
+    
+    print(f"[INFO] Processing {len(pdf_paths)} PDF(s) sequentially...")
+    print()
+    
+    for i, pdf_path in enumerate(pdf_paths, 1):
+        pdf_path_obj = Path(pdf_path)
+        pdf_name = pdf_path_obj.stem
+        
+        print(f"[INFO] Processing PDF {i}/{len(pdf_paths)}: {pdf_name}")
+        
+        # Check if PDF exists
+        if not pdf_path_obj.exists():
+            print(f"[ERROR] PDF file not found: {pdf_path}")
+            raise FileNotFoundError(f"PDF file not found: {pdf_path}")
+        
+        # Extract text using LLM (no fallback)
+        extracted_text = extract_with_llm_no_fallback(pdf_path, api_key, extract_year)
+        
+        if not extracted_text:
+            print(f"[ERROR] Failed to extract content from PDF: {pdf_path}")
+            raise RuntimeError(f"Failed to extract content from PDF: {pdf_path}")
+        
+        # Store PDF content
+        pdf_contents.append((pdf_name, extracted_text))
+        
+        # Add to combined text with separator
+        combined_parts.append(f"\n\n=== PDF: {pdf_name} ===\n\n{extracted_text}")
+        
+        print(f"[OK] Extracted {len(extracted_text):,} characters from {pdf_name}")
+        print()
+    
+    # Combine all texts
+    combined_text = "\n".join(combined_parts)
+    
+    print(f"[OK] Successfully extracted content from {len(pdf_paths)} PDF(s)")
+    print(f"[INFO] Total combined text length: {len(combined_text):,} characters")
+    
+    return combined_text, pdf_contents
+
+
 if __name__ == '__main__':
     """
     Main execution block - runs when script is executed directly.
@@ -431,3 +666,88 @@ if __name__ == '__main__':
         print("  1. API key invalid or expired")
         print("  2. PDF file is corrupted")
         print("  3. API rate limits or connection issues")
+
+
+def split_pdf_at_pages(pdf_path: str, split_pages: list[int]) -> list[str]:
+    """
+    Split PDF at specified page numbers (no overlap).
+    
+    Args:
+        pdf_path: Path to PDF file
+        split_pages: List of page numbers (1-indexed) where to split
+        
+    Returns:
+        List of paths to split PDF files
+    """
+    try:
+        from PyPDF2 import PdfReader, PdfWriter
+    except ImportError:
+        print("[ERROR] PyPDF2 not installed. Install with: pip install PyPDF2")
+        return []
+    
+    from pathlib import Path
+    
+    pdf_path_obj = Path(pdf_path)
+    reader = PdfReader(str(pdf_path))
+    total_pages = len(reader.pages)
+    
+    # Create output directory
+    output_dir = pdf_path_obj.parent / f"{pdf_path_obj.stem}_split"
+    output_dir.mkdir(exist_ok=True)
+    
+    chunk_files = []
+    start_page = 0  # 0-indexed
+    
+    # Sort split pages and ensure they're within valid range
+    split_pages = sorted([p for p in split_pages if 1 <= p <= total_pages])
+    
+    if not split_pages:
+        print("[WARNING] No valid split pages provided. Returning original PDF.")
+        return [pdf_path]
+    
+    print(f"[INFO] Splitting PDF at pages: {split_pages}")
+    print(f"[INFO] Total pages: {total_pages}")
+    
+    for i, split_page in enumerate(split_pages):
+        # Convert 1-indexed to 0-indexed (split_page is the first page of next chunk)
+        end_page = min(split_page - 1, total_pages - 1)  # Last page of current chunk
+        
+        # Create writer for this chunk
+        writer = PdfWriter()
+        
+        # Add pages from start to end
+        for page_num in range(start_page, end_page + 1):
+            writer.add_page(reader.pages[page_num])
+        
+        # Save chunk
+        chunk_filename = f"{pdf_path_obj.stem}_part{i+1}_{start_page+1}-{end_page+1}.pdf"
+        chunk_path = output_dir / chunk_filename
+        
+        with open(chunk_path, 'wb') as output_file:
+            writer.write(output_file)
+        
+        chunk_files.append(str(chunk_path))
+        print(f"[OK] Created chunk {i+1}: {chunk_filename} (pages {start_page+1}-{end_page+1})")
+        
+        # Start next chunk from the split page
+        start_page = split_page
+    
+    # Handle remaining pages after last split
+    if start_page < total_pages:
+        writer = PdfWriter()
+        for page_num in range(start_page, total_pages):
+            writer.add_page(reader.pages[page_num])
+        
+        chunk_filename = f"{pdf_path_obj.stem}_part{len(split_pages)+1}_{start_page+1}-{total_pages}.pdf"
+        chunk_path = output_dir / chunk_filename
+        
+        with open(chunk_path, 'wb') as output_file:
+            writer.write(output_file)
+        
+        chunk_files.append(str(chunk_path))
+        print(f"[OK] Created final chunk: {chunk_filename} (pages {start_page+1}-{total_pages})")
+    
+    print(f"\n[SUCCESS] Split PDF into {len(chunk_files)} chunks")
+    print(f"[INFO] Chunk files saved in: {output_dir}")
+    
+    return chunk_files

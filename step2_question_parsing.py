@@ -13,6 +13,7 @@ from pathlib import Path  # For file path operations
 import json  # For JSON parsing and saving
 import sys  # For system operations
 import yaml  # For reading config file
+import re  # For regular expressions (exam info extraction)
 
 
 def get_api_key() -> str:
@@ -88,13 +89,53 @@ def load_extracted_content(content_file: str) -> str:
         return None
 
 
-def parse_questions_with_llm(content: str, api_key: str) -> list:
+def extract_exam_info_from_content(content: str) -> str:
+    """
+    Extract exam information from content if present.
+    
+    Args:
+        content: Extracted PDF content text
+        
+    Returns:
+        Exam info string (e.g., "[CBSE 2023 (57/1/1)]") or empty string if not found
+    """
+    # Look for "EXAM_INFO: [info]" pattern at the beginning
+    lines = content.split('\n')
+    for line in lines[:10]:  # Check first 10 lines
+        if line.strip().startswith('EXAM_INFO:'):
+            exam_info = line.strip().replace('EXAM_INFO:', '').strip()
+            # Validate it looks like exam info (contains brackets or exam name)
+            if exam_info and (exam_info.startswith('[') or 'CBSE' in exam_info.upper() or 'exam' in exam_info.lower() or 'sample' in exam_info.lower()):
+                return exam_info
+    
+    # Also check for exam info patterns in content (e.g., "[CBSE 2023 (57/1/1)]")
+    # Look for patterns like [CBSE ...], [Exam ...], etc.
+    exam_pattern = r'\[(?:CBSE|Exam|Sample|Question Paper|Delhi).*?\]'
+    matches = re.findall(exam_pattern, content[:500], re.IGNORECASE)  # Check first 500 chars
+    if matches:
+        # Return the first match found
+        return matches[0] if matches[0].startswith('[') else f"[{matches[0]}]"
+    
+    # Also check for patterns without brackets
+    exam_pattern_no_brackets = r'(?:CBSE|Exam|Sample|Question Paper).*?(?:20\d{2}|19\d{2}).*?(?:\(.*?\)|\[.*?\])?'
+    matches_no_brackets = re.findall(exam_pattern_no_brackets, content[:500], re.IGNORECASE)
+    if matches_no_brackets:
+        exam_text = matches_no_brackets[0].strip()
+        if not exam_text.startswith('['):
+            return f"[{exam_text}]"
+        return exam_text
+    
+    return ""
+
+
+def parse_questions_with_llm(content: str, api_key: str, extract_year: bool = False) -> list:
     """
     Parse extracted content into structured question objects using Claude API.
     
     Args:
         content: Extracted PDF content text
         api_key: Anthropic API key
+        extract_year: Whether to extract and include exam information (default: False)
         
     Returns:
         List of question dictionaries, or None if parsing fails
@@ -102,11 +143,18 @@ def parse_questions_with_llm(content: str, api_key: str) -> list:
     print("[INFO] Sending content to Claude API for parsing...")
     print("[INFO] This may take 30-60 seconds...")
     
+    # Extract exam info if enabled
+    exam_info = ""
+    if extract_year:
+        exam_info = extract_exam_info_from_content(content)
+        if exam_info:
+            print(f"[INFO] Extracted exam info: {exam_info}")
+    
     try:
         # Initialize Anthropic client
         client = Anthropic(api_key=api_key)
         
-        # Create parsing prompt with detailed instructions
+        # Build parsing prompt
         prompt = """Parse the following extracted PDF content and structure it for PowerPoint slides.
 
 Rules:
@@ -122,13 +170,28 @@ Rules:
 5. Multi-part questions: Keep all parts (i), (ii), etc. together on same question slide
 6. Tables: Parse into structured format with "headers" array and "rows" array (each row is an array)
 7. Diagrams: Extract description and wrap in brackets [description] for manual addition later
-8. Multiple choice options: Keep as array of strings like ["a) option1", "b) option2", ...]
+8. Multiple choice options: Keep as array of strings like ["a) option1", "b) option2", ...]"""
+        
+        # Add exam info to JSON structure if enabled
+        if extract_year and exam_info:
+            prompt += f"""
+9. Exam information: If exam info "{exam_info}" was found in the content, include it in the "exam_info" field for all questions."""
+        
+        prompt += """
 
-Return ONLY valid JSON array with this structure:
-[
+Return ONLY valid JSON array with this structure:"""
+        
+        # Build JSON structure
+        json_structure = """[
   {
     "question_number": "Q1",
-    "question_type": "regular" | "multi_part" | "multiple_choice" | "passage_based",
+    "question_type": "regular" | "multi_part" | "multiple_choice" | "passage_based","""
+        
+        if extract_year and exam_info:
+            json_structure += f'''
+    "exam_info": "{exam_info}",'''
+        
+        json_structure += """
     "slides": [
       {
         "slide_type": "question" | "answer" | "passage",
@@ -148,23 +211,30 @@ Return ONLY valid JSON array with this structure:
       }
     ]
   }
-]
+]"""
+        
+        prompt += json_structure + """
 
 Extracted Content:
 """ + content
         
-        # Call Claude API
+        # Call Claude API with streaming for long requests
         response = client.messages.create(
             model="claude-sonnet-4-5-20250929",  # Claude model version
-            max_tokens=16000,  # Maximum response length
+            max_tokens=32000,  # Maximum response length (increased for larger PDFs)
             messages=[{
                 "role": "user",  # User message
                 "content": prompt  # Parsing instructions + content
-            }]
+            }],
+            stream=True  # Enable streaming for long requests
         )
         
-        # Extract JSON from response
-        response_text = response.content[0].text
+        # Collect streaming response
+        response_text = ""
+        for event in response:
+            if event.type == "content_block_delta":
+                if hasattr(event, 'delta') and hasattr(event.delta, 'text'):
+                    response_text += event.delta.text
         
         # Try to extract JSON from response (might have markdown code blocks)
         json_text = response_text
@@ -183,7 +253,16 @@ Extracted Content:
         
         # Parse JSON
         questions = json.loads(json_text)
+        
+        # Add exam_info to all questions if extracted and not already present
+        if extract_year and exam_info:
+            for q in questions:
+                if 'exam_info' not in q:
+                    q['exam_info'] = exam_info
+        
         print("[OK] Questions parsed successfully")
+        if extract_year and exam_info:
+            print(f"[INFO] Exam info {exam_info} included in all questions")
         return questions
         
     except json.JSONDecodeError as e:
@@ -307,8 +386,10 @@ def create_preview(questions: list, preview_file: str):
         for q in questions:
             q_num = q.get('question_number', 'Unknown')
             q_type = q.get('question_type', 'unknown')
+            exam_info = q.get('exam_info', '')
             
-            f.write(f"\n{q_num} ({q_type.upper()})\n")
+            exam_str = f"\n  Exam: {exam_info}" if exam_info else ""
+            f.write(f"\n{q_num} ({q_type.upper()}){exam_str}\n")
             f.write("-" * 60 + "\n")
             
             # Write slides
@@ -355,6 +436,219 @@ def create_preview(questions: list, preview_file: str):
             f.write("\n")
     
     print(f"[OK] Preview saved to: {preview_file}")
+
+
+def parse_questions_with_llm_offset(content: str, api_key: str, start_question_number: int = 1, extract_year: bool = False) -> list:
+    """
+    Parse extracted content into structured question objects using Claude API
+    with offset question numbering.
+    
+    Args:
+        content: Extracted PDF content text
+        api_key: Anthropic API key
+        start_question_number: Starting question number (default: 1)
+        extract_year: Whether to extract and include exam information (default: False)
+        
+    Returns:
+        List of question dictionaries, or None if parsing fails
+    """
+    print(f"[INFO] Sending content to Claude API for parsing (starting from Q{start_question_number})...")
+    print("[INFO] This may take 30-60 seconds...")
+    
+    # Extract exam info if enabled
+    exam_info = ""
+    if extract_year:
+        exam_info = extract_exam_info_from_content(content)
+        if exam_info:
+            print(f"[INFO] Extracted exam info: {exam_info}")
+    
+    try:
+        # Initialize Anthropic client
+        client = Anthropic(api_key=api_key)
+        
+        # Build parsing prompt
+        prompt = f"""Parse the following extracted PDF content and structure it for PowerPoint slides.
+
+Rules:
+1. Number questions sequentially starting from Q{start_question_number} (Q{start_question_number}, Q{start_question_number + 1}, Q{start_question_number + 2}...)
+2. Ignore question numbers from PDF - use the sequential numbering starting from Q{start_question_number}
+3. Maintain the exact order as questions appear in PDF
+4. For each question, create slide objects:
+   - Question slide: Contains question text (all parts if multi-part), options (if any), structured table data (if any), diagram description in brackets [description] (if any)
+   - Answer slide: Contains answer (if provided) - comes AFTER question slide
+5. Passage-based questions: 
+   - Passage gets its own slide BEFORE questions
+   - Then question slide(s) follow
+   - Then answer slide(s) follow
+6. Multi-part questions: Keep all parts (i), (ii), etc. together on same question slide
+7. Tables: Parse into structured format with "headers" array and "rows" array (each row is an array)
+8. Diagrams: Extract description and wrap in brackets [description] for manual addition later
+9. Multiple choice options: Keep as array of strings like ["a) option1", "b) option2", ...]"""
+        
+        # Add exam info instruction if enabled
+        if extract_year and exam_info:
+            prompt += f"""
+10. Exam information: If exam info "{exam_info}" was found in the content, include it in the "exam_info" field for all questions."""
+        
+        prompt += f"""
+
+Return ONLY valid JSON array with this structure:
+[
+  {{
+    "question_number": "Q{start_question_number}",
+    "question_type": "regular" | "multi_part" | "multiple_choice" | "passage_based","""
+        
+        if extract_year and exam_info:
+            prompt += f'''
+    "exam_info": "{exam_info}",'''
+        
+        prompt += """
+    "slides": [
+      {{
+        "slide_type": "question" | "answer" | "passage",
+        "content": {{
+          "question_text": "...",
+          "options": ["a) ...", "b) ..."] or [],
+          "table": {{"headers": [...], "rows": [[...], [...]]}} or null,
+          "diagram_description": "[description]" or null,
+          "passage": "..." or null
+        }}
+      }},
+      {{
+        "slide_type": "answer",
+        "content": {{
+          "answer_text": "..."
+        }}
+      }}
+    ]
+  }}
+]
+
+Extracted Content:
+""" + content
+        
+        # Call Claude API with streaming for long requests
+        response = client.messages.create(
+            model="claude-sonnet-4-5-20250929",  # Claude model version
+            max_tokens=32000,  # Maximum response length (increased for larger PDFs)
+            messages=[{
+                "role": "user",  # User message
+                "content": prompt  # Parsing instructions + content
+            }],
+            stream=True  # Enable streaming for long requests
+        )
+        
+        # Collect streaming response
+        response_text = ""
+        for event in response:
+            if event.type == "content_block_delta":
+                if hasattr(event, 'delta') and hasattr(event.delta, 'text'):
+                    response_text += event.delta.text
+        
+        # Try to extract JSON from response (might have markdown code blocks)
+        json_text = response_text
+        
+        # Remove markdown code blocks if present
+        if "```json" in json_text:
+            # Extract JSON from markdown code block
+            start = json_text.find("```json") + 7
+            end = json_text.find("```", start)
+            json_text = json_text[start:end].strip()
+        elif "```" in json_text:
+            # Extract JSON from generic code block
+            start = json_text.find("```") + 3
+            end = json_text.find("```", start)
+            json_text = json_text[start:end].strip()
+        
+        # Parse JSON
+        questions = json.loads(json_text)
+        
+        # Add exam_info to all questions if extracted and not already present
+        if extract_year and exam_info:
+            for q in questions:
+                if 'exam_info' not in q:
+                    q['exam_info'] = exam_info
+        
+        print(f"[OK] Questions parsed successfully (starting from Q{start_question_number})")
+        if extract_year and exam_info:
+            print(f"[INFO] Exam info {exam_info} included in all questions")
+        return questions
+        
+    except json.JSONDecodeError as e:
+        print(f"[ERROR] Failed to parse JSON response: {e}")
+        print("[INFO] Response preview:")
+        print(response_text[:500])
+        return None
+    except Exception as e:
+        print(f"[ERROR] LLM parsing failed: {e}")
+        return None
+
+
+def renumber_questions_sequential(questions: list, start_num: int) -> list:
+    """
+    Renumber questions sequentially starting from the given number.
+    
+    Args:
+        questions: List of question dictionaries
+        start_num: Starting question number (e.g., 1 for Q1, 21 for Q21)
+        
+    Returns:
+        List of questions with updated question_number fields
+    """
+    for i, q in enumerate(questions):
+        q['question_number'] = f"Q{start_num + i}"
+    return questions
+
+
+def parse_multiple_pdfs_content(pdf_contents: list[tuple[str, str]], api_key: str, start_question_number: int = 1, extract_year: bool = False) -> list:
+    """
+    Parse multiple PDF contents sequentially with continuous question numbering.
+    
+    Args:
+        pdf_contents: List of (pdf_name, content) tuples
+        api_key: Anthropic API key
+        start_question_number: Starting question number for the first PDF (default: 1)
+        extract_year: Whether to extract and include exam information (default: False)
+        
+    Returns:
+        Combined list of all questions from all PDFs with sequential numbering
+    """
+    all_questions = []
+    current_question_number = start_question_number
+    
+    print(f"[INFO] Processing {len(pdf_contents)} PDF content(s) sequentially...")
+    print(f"[INFO] Questions will start from Q{start_question_number}")
+    if extract_year:
+        print(f"[INFO] Exam information extraction enabled")
+    print()
+    
+    for i, (pdf_name, content) in enumerate(pdf_contents, 1):
+        print(f"[INFO] Parsing PDF {i}/{len(pdf_contents)}: {pdf_name}")
+        print(f"[INFO] Questions will start from Q{current_question_number}")
+        
+        # Parse questions with offset numbering
+        questions = parse_questions_with_llm_offset(content, api_key, current_question_number, extract_year)
+        
+        if not questions:
+            print(f"[ERROR] Failed to parse questions from PDF: {pdf_name}")
+            raise RuntimeError(f"Failed to parse questions from PDF: {pdf_name}")
+        
+        # Add to combined list
+        all_questions.extend(questions)
+        
+        # Update current question number for next PDF
+        current_question_number += len(questions)
+        
+        print(f"[OK] Parsed {len(questions)} questions from {pdf_name} (Q{current_question_number - len(questions)} to Q{current_question_number - 1})")
+        print()
+    
+    # Safety check: ensure numbering is sequential from the start number
+    all_questions = renumber_questions_sequential(all_questions, start_question_number)
+    
+    print(f"[OK] Successfully parsed {len(all_questions)} questions from {len(pdf_contents)} PDF(s)")
+    print(f"[INFO] Questions numbered from Q{start_question_number} to Q{start_question_number + len(all_questions) - 1}")
+    
+    return all_questions
 
 
 if __name__ == '__main__':

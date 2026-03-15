@@ -29,12 +29,13 @@ from step3_pptx_new import PPTXGenerator, load_parsed_questions
 from pptx import Presentation
 
 
-def run_step1(pdf_path: str) -> tuple:
+def run_step1(pdf_path: str, extract_year: bool = False) -> tuple:
     """
     Run Step 1: PDF Content Extraction
     
     Args:
         pdf_path: Path to PDF file
+        extract_year: Whether to extract exam information (default: False)
         
     Returns:
         Tuple of (success: bool, pdf_name: str, extracted_text: str)
@@ -48,6 +49,8 @@ def run_step1(pdf_path: str) -> tuple:
     pdf_name = Path(pdf_path).stem
     print(f"[INFO] Processing PDF: {pdf_path}")
     print(f"[INFO] PDF name: {pdf_name}")
+    if extract_year:
+        print(f"[INFO] Exam information extraction enabled")
     print()
     
     # Check if PDF exists
@@ -65,7 +68,7 @@ def run_step1(pdf_path: str) -> tuple:
     # Extract text
     print("[INFO] Sending PDF to Claude API for extraction...")
     print("[INFO] This may take 30-60 seconds...")
-    extracted_text = extract_with_llm(pdf_path, api_key)
+    extracted_text = extract_with_llm(pdf_path, api_key, extract_year)
     
     if not extracted_text:
         print("[ERROR] Failed to extract content from PDF")
@@ -88,12 +91,13 @@ def run_step1(pdf_path: str) -> tuple:
     return True, pdf_name, extracted_text
 
 
-def run_step2(pdf_name: str) -> tuple:
+def run_step2(pdf_name: str, extract_year: bool = False) -> tuple:
     """
     Run Step 2: Question Parsing & Slide Structuring
     
     Args:
         pdf_name: PDF name (without extension)
+        extract_year: Whether to extract exam information (default: False)
         
     Returns:
         Tuple of (success: bool, questions: list)
@@ -130,7 +134,7 @@ def run_step2(pdf_name: str) -> tuple:
     # Parse questions
     print("[INFO] Sending content to Claude API for parsing...")
     print("[INFO] This may take 30-60 seconds...")
-    questions = parse_questions_with_llm(content, api_key)
+    questions = parse_questions_with_llm(content, api_key, extract_year)
     
     if not questions:
         print("[ERROR] Failed to parse questions")
@@ -191,13 +195,14 @@ def get_unique_output_filename(base_name: str, folder: str = "PPTs") -> str:
         counter += 1
 
 
-def run_step3(pdf_name: str, include_answers: bool = True) -> str:
+def run_step3(pdf_name: str, include_answers: bool = True, start_question_number: int = 1) -> str:
     """
     Run Step 3: PPTX Generation
     
     Args:
         pdf_name: PDF name (without extension)
         include_answers: Whether to include answer slides (default: True)
+        start_question_number: Starting question number (default: 1)
         
     Returns:
         Output file path, or None if failed
@@ -238,7 +243,7 @@ def run_step3(pdf_name: str, include_answers: bool = True) -> str:
     generator = PPTXGenerator()
     
     print("[INFO] Creating PowerPoint presentation...")
-    generator.generate(questions, output_file, include_answers=include_answers)
+    generator.generate(questions, output_file, include_answers=include_answers, start_question_number=start_question_number)
     
     # Verify output
     try:
@@ -255,11 +260,18 @@ def main():
     """Main execution function."""
     # Check command line arguments
     if len(sys.argv) < 2:
-        print("Usage: python generate_ppt_from_pdf.py <pdf_file> [--no-answers]")
-        print("Example: python generate_ppt_from_pdf.py \"Adobe-Scan-03-Nov-2025.pdf\"")
-        print("Example: python generate_ppt_from_pdf.py \"Adobe-Scan-03-Nov-2025.pdf\" --no-answers")
+        print("Usage: python generate_ppt_from_pdf.py <pdf_file> [--no-answers] [--start-number <num>] [--split-at <pages>] [--extract-exam-info]")
+        print("Example: python generate_ppt_from_pdf.py \"file.pdf\"")
+        print("Example: python generate_ppt_from_pdf.py \"large.pdf\" --split-at \"25,50,75\"")
+        print("Example: python generate_ppt_from_pdf.py \"previous_year.pdf\" --extract-exam-info")
+        print("Example: python generate_ppt_from_pdf.py \"large.pdf\" --split-at \"30,60\" --no-answers --start-number 1 --extract-exam-info")
         print("\nOptions:")
-        print("  --no-answers    Exclude answer slides from the presentation")
+        print("  --no-answers         Exclude answer slides from the presentation")
+        print("  --start-number <num> Start numbering questions and answers from this number (default: 1)")
+        print("  --split-at <pages>   Split PDF at specified page numbers (comma-separated, e.g., \"25,50,75\")")
+        print("                       Use this for large PDFs to avoid connection timeouts")
+        print("  --extract-exam-info  Extract and display exam information from previous year question papers")
+        print("                       (e.g., [CBSE 2023 (57/1/1)], [CBSE Delhi 2015 [HOTS]])")
         print("\nNote: PDF file can be in current directory or provide full/relative path")
         sys.exit(1)
     
@@ -270,6 +282,47 @@ def main():
     if len(sys.argv) > 2 and '--no-answers' in sys.argv:
         include_answers = False
         print("[INFO] Answer slides will be excluded from the presentation")
+    
+    # Check for --extract-exam-info flag
+    extract_year = False
+    if '--extract-exam-info' in sys.argv:
+        extract_year = True
+        print("[INFO] Exam information extraction enabled")
+    
+    # Check for --start-number flag
+    start_question_number = 1  # Default value
+    if '--start-number' in sys.argv:
+        try:
+            idx = sys.argv.index('--start-number')
+            if idx + 1 < len(sys.argv):
+                start_question_number = int(sys.argv[idx + 1])
+                if start_question_number < 1:
+                    print("[ERROR] Start number must be at least 1")
+                    sys.exit(1)
+                print(f"[INFO] Questions and answers will be numbered starting from {start_question_number}")
+            else:
+                print("[ERROR] --start-number requires a number argument")
+                sys.exit(1)
+        except ValueError:
+            print("[ERROR] --start-number must be followed by a valid integer")
+            sys.exit(1)
+    
+    # Check for --split-at flag
+    manual_split_pages = None
+    if '--split-at' in sys.argv:
+        try:
+            idx = sys.argv.index('--split-at')
+            if idx + 1 < len(sys.argv):
+                # Parse comma-separated page numbers
+                split_str = sys.argv[idx + 1]
+                manual_split_pages = [int(x.strip()) for x in split_str.split(',')]
+                print(f"[INFO] Will split PDF at pages: {manual_split_pages}")
+            else:
+                print("[ERROR] --split-at requires page numbers (comma-separated)")
+                sys.exit(1)
+        except ValueError:
+            print("[ERROR] --split-at must be followed by comma-separated page numbers (e.g., \"25,50,75\")")
+            sys.exit(1)
     
     # Check if PDF exists (try current directory first, then as-is)
     if not Path(pdf_path).exists():
@@ -282,6 +335,82 @@ def main():
             print("[INFO] Make sure the PDF is in the current directory or provide full path")
             sys.exit(1)
     
+    # If split pages are specified, split and use multi-PDF workflow
+    if manual_split_pages:
+        print("=" * 60)
+        print("SPLITTING PDF AND PROCESSING MULTIPLE CHUNKS")
+        print("=" * 60)
+        print(f"Input PDF: {pdf_path}")
+        print(f"Split at pages: {manual_split_pages}")
+        print()
+        
+        # Import splitting function
+        from step1_pdf_extraction import split_pdf_at_pages
+        
+        # Split the PDF
+        split_files = split_pdf_at_pages(pdf_path, manual_split_pages)
+        
+        if not split_files or len(split_files) == 0:
+            print("[ERROR] Failed to split PDF")
+            sys.exit(1)
+        
+        if len(split_files) == 1:
+            print("[INFO] Only one chunk created, processing as single PDF...")
+            pdf_path = split_files[0]
+            manual_split_pages = None  # Reset to use single PDF workflow
+        else:
+            # Use multi-PDF workflow
+            print(f"[INFO] Processing {len(split_files)} chunks using multi-PDF workflow...")
+            # Import and use multi-PDF functions
+            from generate_ppt_from_multiple_pdfs import (
+                run_step1_multiple,
+                run_step2_multiple,
+                run_step3_multiple,
+                save_parsed_questions,
+                create_preview
+            )
+            
+            # Step 1: Extract from all chunks
+            success, first_pdf_name, combined_text, pdf_contents = run_step1_multiple(split_files, extract_year)
+            if not success:
+                print("\n[ERROR] Step 1 failed. Exiting.")
+                sys.exit(1)
+            
+            # Step 2: Parse questions (sequential numbering handled automatically)
+            success, questions = run_step2_multiple(pdf_contents, start_question_number, extract_year)
+            if not success:
+                print("\n[ERROR] Step 2 failed. Exiting.")
+                sys.exit(1)
+            
+            # Save parsed questions
+            questions_file = f"output/parsed_questions_{first_pdf_name}.json"
+            save_parsed_questions(questions, questions_file)
+            
+            preview_file = f"output/parsed_questions_{first_pdf_name}_preview.txt"
+            create_preview(questions, preview_file)
+            
+            # Step 3: Generate PPTX
+            output_file = run_step3_multiple(first_pdf_name, questions, include_answers=include_answers)
+            if not output_file:
+                print("\n[ERROR] Step 3 failed. Exiting.")
+                sys.exit(1)
+            
+            # Final summary
+            print("\n" + "=" * 60)
+            print("GENERATION COMPLETE!")
+            print("=" * 60)
+            print(f"Input PDF: {pdf_path}")
+            print(f"Split into: {len(split_files)} chunks at pages: {manual_split_pages}")
+            print(f"Output PPTX: {output_file}")
+            print(f"Total questions: {len(questions)}")
+            print(f"Questions numbered from Q{start_question_number} to Q{start_question_number + len(questions) - 1}")
+            if not include_answers:
+                print(f"Note: Answer slides were excluded")
+            print(f"\n[SUCCESS] Presentation generated successfully!")
+            print(f"[INFO] Open {output_file} to review the results")
+            return
+    
+    # Normal single PDF processing
     print("=" * 60)
     print("INTEGRATED PPT GENERATION FROM PDF")
     print("=" * 60)
@@ -290,19 +419,19 @@ def main():
     print()
     
     # Step 1: Extract PDF content
-    success, pdf_name, extracted_text = run_step1(pdf_path)
+    success, pdf_name, extracted_text = run_step1(pdf_path, extract_year)
     if not success:
         print("\n[ERROR] Step 1 failed. Exiting.")
         sys.exit(1)
     
     # Step 2: Parse questions
-    success, questions = run_step2(pdf_name)
+    success, questions = run_step2(pdf_name, extract_year)
     if not success:
         print("\n[ERROR] Step 2 failed. Exiting.")
         sys.exit(1)
     
     # Step 3: Generate PPTX
-    output_file = run_step3(pdf_name, include_answers=include_answers)
+    output_file = run_step3(pdf_name, include_answers=include_answers, start_question_number=start_question_number)
     if not output_file:
         print("\n[ERROR] Step 3 failed. Exiting.")
         sys.exit(1)

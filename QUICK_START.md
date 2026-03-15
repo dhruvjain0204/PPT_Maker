@@ -33,7 +33,11 @@
 
 3. **Run the script:**
    ```bash
+   # Single PDF
    python generate_ppt_from_pdf.py "path\to\your\file.pdf"
+   
+   # Multiple PDFs
+   python generate_ppt_from_multiple_pdfs.py "pdf1.pdf" "pdf2.pdf" "pdf3.pdf"
    ```
 
 ### Mac/Linux:
@@ -52,7 +56,11 @@
 
 4. **Run the script:**
    ```bash
+   # Single PDF
    python3 generate_ppt_from_pdf.py "path/to/your/file.pdf"
+   
+   # Multiple PDFs
+   python3 generate_ppt_from_multiple_pdfs.py "pdf1.pdf" "pdf2.pdf" "pdf3.pdf"
    ```
 
 ## Manual Setup (If Scripts Don't Work)
@@ -72,13 +80,21 @@
 
 4. **Run:**
    ```bash
+   # Single PDF
    python generate_ppt_from_pdf.py "your_file.pdf"
+   
+   # Multiple PDFs
+   python generate_ppt_from_multiple_pdfs.py "pdf1.pdf" "pdf2.pdf"
+   
+   # Multiple PDFs starting from Q20
+   python generate_ppt_from_multiple_pdfs.py "pdf1.pdf" "pdf2.pdf" --start-from 20
    ```
 
 ## What Files to Transfer
 
 **Required Files:**
-- `generate_ppt_from_pdf.py`
+- `generate_ppt_from_pdf.py` (single PDF processing)
+- `generate_ppt_from_multiple_pdfs.py` (multi-PDF processing)
 - `step1_pdf_extraction.py`
 - `step2_question_parsing.py`
 - `step3_pptx_new.py`
@@ -114,7 +130,11 @@
 After setup, test with a sample PDF:
 
 ```bash
+# Single PDF
 python generate_ppt_from_pdf.py "test.pdf"
+
+# Multiple PDFs
+python generate_ppt_from_multiple_pdfs.py "test1.pdf" "test2.pdf"
 ```
 
 If successful, you should see:
@@ -122,6 +142,12 @@ If successful, you should see:
 - `[OK] Step 2 complete`
 - `[OK] Step 3 complete`
 - `[SUCCESS] Presentation generated successfully!`
+
+**Tips:**
+- Use `generate_ppt_from_pdf.py` for single PDF files
+- Use `generate_ppt_from_multiple_pdfs.py` for multiple PDFs or large PDFs (>100 pages)
+- Use `--start-from N` to start question numbering from a specific number
+- Use `--no-answers` to exclude answer slides
 
 ## Troubleshooting
 

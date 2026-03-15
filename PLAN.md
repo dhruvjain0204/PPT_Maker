@@ -296,6 +296,116 @@ Total slides: 52
 
 ---
 
+## Multi-PDF Processing Script 🆕 NEW
+
+**File:** `generate_ppt_from_multiple_pdfs.py`
+
+**Status:** ✅ Complete - Process multiple PDFs sequentially with continuous question numbering
+
+**What it does:**
+- Processes multiple PDF files sequentially to avoid overwhelming the LLM
+- Maintains continuous question numbering across all PDFs (Q1, Q2... Q20 from PDF1, then Q21, Q22... from PDF2)
+- Supports custom starting question numbers (e.g., start from Q50)
+- Processes each PDF separately in Step 1 and Step 2 for better quality
+- Combines all questions into a single PowerPoint presentation
+
+**Why use this:**
+- Better quality for large PDFs (>100 pages) - splits into smaller chunks
+- Avoids API page limits (Claude API has 100-page limit per request)
+- Processes PDFs one by one to prevent overwhelming the LLM
+- Maintains sequential numbering automatically
+
+**How it works:**
+1. Accepts multiple PDF filenames as command line arguments
+2. Processes each PDF sequentially in Step 1 (extraction)
+3. Processes each PDF's content sequentially in Step 2 (parsing) with offset numbering
+4. Combines all questions with continuous numbering
+5. Generates single PPTX file with all questions from all PDFs
+
+**Dependencies:**
+- All dependencies from Step 1, 2, and 3
+- Uses new functions: `extract_multiple_pdfs()`, `parse_multiple_pdfs_content()`, etc.
+
+**To run:**
+```bash
+# Multiple PDFs (separate arguments)
+python generate_ppt_from_multiple_pdfs.py "pdf1.pdf" "pdf2.pdf" "pdf3.pdf"
+
+# Multiple PDFs (comma-separated)
+python generate_ppt_from_multiple_pdfs.py "pdf1.pdf,pdf2.pdf,pdf3.pdf"
+
+# Starting from Q20
+python generate_ppt_from_multiple_pdfs.py "pdf1.pdf" "pdf2.pdf" --start-from 20
+
+# Without answer slides
+python generate_ppt_from_multiple_pdfs.py "pdf1.pdf" "pdf2.pdf" --no-answers
+
+# Starting from Q50 without answers
+python generate_ppt_from_multiple_pdfs.py "pdf1.pdf" "pdf2.pdf" --no-answers --start-from 50
+
+# Single PDF also works
+python generate_ppt_from_multiple_pdfs.py "pdf1.pdf"
+```
+
+**Output:**
+- Intermediate files: `output/extracted_pdf_content_{first_pdf_name}.txt`, `output/parsed_questions_{first_pdf_name}.json`
+- Final PPTX: `PPTs/{first_pdf_name}.pptx` (or `PPTs/{first_pdf_name}_1.pptx` if exists, etc.)
+
+**Features:**
+- ✅ Process multiple PDFs sequentially
+- ✅ Continuous question numbering across PDFs
+- ✅ Custom starting question number (`--start-from N`)
+- ✅ Optional answer slides (`--no-answers` flag)
+- ✅ Supports both separate arguments and comma-separated format
+- ✅ Uses first PDF name for output file naming
+- ✅ No image OCR fallback (uses direct PDF extraction only)
+
+**Question Numbering:**
+- Default: Starts from Q1, continues sequentially
+- With `--start-from 20`: First PDF starts at Q20, subsequent PDFs continue from where previous ended
+- Example: If PDF1 has 10 questions starting from Q20 → Q29, PDF2 starts from Q30
+
+**Example Output:**
+```
+============================================================
+INTEGRATED PPT GENERATION FROM MULTIPLE PDFS
+============================================================
+Input PDFs: 3 file(s)
+  1. pdf1.pdf
+  2. pdf2.pdf
+  3. pdf3.pdf
+
+[Step 1: PDF Content Extraction (MULTIPLE PDFS)...]
+[INFO] Processing 3 PDF(s) sequentially...
+[OK] Extracted 21,563 characters from pdf1
+[OK] Extracted 14,304 characters from pdf2
+[OK] Extracted 15,052 characters from pdf3
+
+[Step 2: QUESTION PARSING & SLIDE STRUCTURING (MULTIPLE PDFS)...]
+[INFO] Questions will start from Q125
+[OK] Parsed 55 questions from pdf1 (Q125 to Q179)
+[OK] Parsed 37 questions from pdf2 (Q180 to Q216)
+[OK] Parsed 30 questions from pdf3 (Q217 to Q246)
+[INFO] Questions numbered from Q125 to Q246
+
+[Step 3: PPTX GENERATION...]
+
+============================================================
+GENERATION COMPLETE!
+============================================================
+Total questions: 122
+Total slides: 166
+Output PPTX: PPTs/pdf1.pptx
+```
+
+**Use this when:**
+- You have multiple PDF files to combine into one presentation
+- Your PDF is too large (>100 pages) - split it and process separately
+- You want continuous question numbering across multiple PDFs
+- You need to start numbering from a specific number (e.g., continuing from a previous batch)
+
+---
+
 ## Web Application: Streamlit Interface 🌐 NEW
 
 **File:** `streamlit_app.py`
@@ -467,24 +577,25 @@ output:
 
 ```
 PPT Maker/
-├── generate_ppt_from_pdf.py   # 🚀 Integrated script (RECOMMENDED - one command)
-├── step1_pdf_extraction.py    # Step 1: PDF extraction (✅ Complete)
-├── step2_question_parsing.py   # Step 2: Question parsing (✅ Complete)
-├── step3_pptx_generation.py    # Step 3: PPTX generation (legacy/old version)
-├── step3_pptx_new.py          # Step 3: PPTX generation (✅ Current/Refined)
-├── step3_presenton_api.py      # Step 3 Alternative: PPTX via Presenton API (🆕 Available)
-├── config.yaml                 # Configuration file
-├── PLAN.md                     # This file - master plan
-├── output/                     # Intermediate output directory
+├── generate_ppt_from_pdf.py           # 🚀 Single PDF script (RECOMMENDED)
+├── generate_ppt_from_multiple_pdfs.py # 🆕 Multi-PDF script (for large PDFs)
+├── step1_pdf_extraction.py            # Step 1: PDF extraction (✅ Complete)
+├── step2_question_parsing.py          # Step 2: Question parsing (✅ Complete)
+├── step3_pptx_generation.py           # Step 3: PPTX generation (legacy/old version)
+├── step3_pptx_new.py                  # Step 3: PPTX generation (✅ Current/Refined)
+├── step3_presenton_api.py             # Step 3 Alternative: PPTX via Presenton API (🆕 Available)
+├── config.yaml                        # Configuration file
+├── PLAN.md                            # This file - master plan
+├── output/                            # Intermediate output directory
 │   ├── extracted_pdf_content_{pdf_name}.txt
 │   ├── parsed_questions_{pdf_name}.json
 │   ├── parsed_questions_{pdf_name}_preview.txt
-│   └── current_pdf_name.txt   # PDF name tracker
-├── PPTs/                       # Final PPTX output directory
-│   └── {pdf_name}.pptx        # Generated presentations
-├── Adobe-Scan-12-Dec-2025.pdf # Input PDF (example)
-├── Adobe-Scan-03-Nov-2025.pdf # Input PDF (example)
-└── _ch- 7 spp.jpg            # Template slide image
+│   └── current_pdf_name.txt           # PDF name tracker
+├── PPTs/                              # Final PPTX output directory
+│   └── {pdf_name}.pptx                # Generated presentations
+├── Adobe-Scan-12-Dec-2025.pdf         # Input PDF (example)
+├── Adobe-Scan-03-Nov-2025.pdf         # Input PDF (example)
+└── _ch- 7 spp.jpg                     # Template slide image
 ```
 
 ---
@@ -520,6 +631,12 @@ PPT Maker/
 - **2025-12-13**: Created integrated script `generate_ppt_from_pdf.py` for one-command execution
 - **2025-12-13**: Added automatic file conflict handling (auto-numbering for existing files)
 - **2025-12-13**: Updated Step 1 to accept PDF as command line argument
+- **2026-01-01**: Added multi-PDF processing script (`generate_ppt_from_multiple_pdfs.py`)
+- **2026-01-01**: Added `extract_multiple_pdfs()` function to step1 for sequential PDF processing
+- **2026-01-01**: Added `parse_multiple_pdfs_content()` and `parse_questions_with_llm_offset()` functions to step2
+- **2026-01-01**: Added `extract_with_llm_no_fallback()` function (no image OCR fallback)
+- **2026-01-01**: Added `--start-from N` flag for custom question numbering
+- **2026-01-01**: Increased max_tokens to 32000 in parsing functions for larger PDFs
 
 ---
 
@@ -533,7 +650,9 @@ PPT Maker/
 
 **Current Workflow (Recommended):**
 
-**🚀 Primary Approach: Integrated One-Command Script**
+**🚀 Primary Approaches:**
+
+**Single PDF:**
 ```bash
 python generate_ppt_from_pdf.py "Your-PDF-File.pdf"
 ```
@@ -541,6 +660,15 @@ python generate_ppt_from_pdf.py "Your-PDF-File.pdf"
 - Output: `PPTs/{PDF-name}.pptx`
 - Handles file conflicts automatically
 - Shows progress for each step
+
+**Multiple PDFs (Large PDFs or Combining PDFs):**
+```bash
+python generate_ppt_from_multiple_pdfs.py "pdf1.pdf" "pdf2.pdf" "pdf3.pdf"
+```
+- Processes multiple PDFs sequentially
+- Maintains continuous question numbering
+- Better quality for large PDFs (>100 pages)
+- Supports `--start-from N` for custom numbering
 
 **Alternative: Manual Step-by-Step Approach**
 - Step 1: `python step1_pdf_extraction.py "PDF-File.pdf"`
@@ -569,4 +697,9 @@ python generate_ppt_from_pdf.py "Your-PDF-File.pdf"
 - Good for bulk generation if credits available
 
 **Status:** ✅ **Project Complete** - All core features working and refined!
+
+**🆕 Latest Addition: Multi-PDF Processing**
+- Process multiple PDFs with continuous numbering
+- Custom starting question numbers
+- Better quality for large PDFs
 

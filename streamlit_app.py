@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 import os
 import time
+from PyPDF2 import PdfReader
 from step1_pdf_extraction import (
     get_api_key as get_api_key_step1,
     extract_with_llm,
@@ -17,7 +18,8 @@ from step2_question_parsing import (
     load_extracted_content,
     parse_questions_with_llm,
     validate_questions,
-    save_parsed_questions
+    save_parsed_questions,
+    create_preview
 )
 from step3_pptx_new import PPTXGenerator, load_parsed_questions
 from pptx import Presentation
@@ -133,7 +135,86 @@ def cleanup_temp_files(temp_dir):
         st.warning(f"Could not clean up temporary files: {e}")
 
 
-def process_pdf(pdf_path: str, include_answers: bool = True, progress_container=None):
+def process_multiple_pdfs_streamlit(pdf_paths: list[str], include_answers: bool = True, start_question_number: int = 1, extract_year: bool = False):
+    """Process multiple PDFs in Streamlit with progress updates."""
+    from generate_ppt_from_multiple_pdfs import (
+        run_step1_multiple,
+        run_step2_multiple,
+        run_step3_multiple,
+        save_parsed_questions,
+        create_preview
+    )
+    
+    progress_container = st.container()
+    
+    # Step 1
+    with progress_container.status("📄 **Step 1: Extracting content from PDFs...**", state="running"):
+        progress_container.write(f"Processing {len(pdf_paths)} PDF chunk(s)...")
+        success, first_pdf_name, combined_text, pdf_contents = run_step1_multiple(pdf_paths, extract_year)
+        if not success:
+            progress_container.error("❌ Step 1 failed")
+            return
+        progress_container.success(f"✅ Step 1 complete: {len(combined_text):,} characters extracted")
+    
+    # Step 2
+    with progress_container.status("🔍 **Step 2: Parsing questions...**", state="running"):
+        success, questions = run_step2_multiple(pdf_contents, start_question_number, extract_year)
+        if not success:
+            progress_container.error("❌ Step 2 failed")
+            return
+        
+        # Save parsed questions
+        output_dir = Path("output")
+        output_dir.mkdir(exist_ok=True)
+        questions_file = output_dir / f"parsed_questions_{first_pdf_name}.json"
+        save_parsed_questions(questions, str(questions_file))
+        
+        preview_file = output_dir / f"parsed_questions_{first_pdf_name}_preview.txt"
+        create_preview(questions, str(preview_file))
+        
+        progress_container.success(f"✅ Step 2 complete: {len(questions)} questions parsed")
+    
+    # Step 3
+    with progress_container.status("📊 **Step 3: Generating PowerPoint...**", state="running"):
+        output_file = run_step3_multiple(first_pdf_name, questions, include_answers=include_answers)
+        if not output_file:
+            progress_container.error("❌ Step 3 failed")
+            return
+        progress_container.success(f"✅ Step 3 complete")
+    
+    # Show results
+    st.markdown("---")
+    st.header("✅ Generation Complete!")
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Questions", len(questions))
+    with col2:
+        total_slides = sum(len(q.get('slides', [])) for q in questions) if include_answers else sum(
+            1 for q in questions for slide in q.get('slides', []) if slide.get('slide_type') != 'answer'
+        )
+        st.metric("Slides", total_slides)
+    with col3:
+        answer_status = "Included" if include_answers else "Excluded"
+        st.metric("Answer Slides", answer_status)
+    
+    # Download button
+    with open(output_file, "rb") as f:
+        pptx_bytes = f.read()
+    
+    st.download_button(
+        label="📥 Download PowerPoint",
+        data=pptx_bytes,
+        file_name=Path(output_file).name,
+        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        type="primary",
+        use_container_width=True
+    )
+    
+    st.success(f"🎉 Your presentation is ready! Click the button above to download.")
+
+
+def process_pdf(pdf_path: str, include_answers: bool = True, progress_container=None, start_question_number: int = 1, extract_year: bool = False):
     """
     Process PDF through all three steps and generate PPTX.
     
@@ -141,6 +222,8 @@ def process_pdf(pdf_path: str, include_answers: bool = True, progress_container=
         pdf_path: Path to PDF file
         include_answers: Whether to include answer slides
         progress_container: Streamlit container for progress updates
+        start_question_number: Starting question number (default: 1)
+        extract_year: Whether to extract exam information (default: False)
         
     Returns:
         Tuple of (success: bool, output_file: str, stats: dict)
@@ -163,7 +246,7 @@ def process_pdf(pdf_path: str, include_answers: bool = True, progress_container=
         with progress_container.status("📄 **Step 1: Extracting content from PDF...**", state="running"):
             progress_container.write("Sending PDF to Claude API... This may take 30-60 seconds.")
     
-    extracted_text = extract_with_llm(pdf_path, api_key)
+    extracted_text = extract_with_llm(pdf_path, api_key, extract_year)
     if not extracted_text:
         if progress_container:
             progress_container.error("❌ Failed to extract content from PDF")
@@ -195,7 +278,7 @@ def process_pdf(pdf_path: str, include_answers: bool = True, progress_container=
             progress_container.error("❌ Failed to load extracted content")
         return False, None, stats
     
-    questions = parse_questions_with_llm(content, api_key)
+    questions = parse_questions_with_llm(content, api_key, extract_year)
     if not questions:
         if progress_container:
             progress_container.error("❌ Failed to parse questions")
@@ -237,7 +320,7 @@ def process_pdf(pdf_path: str, include_answers: bool = True, progress_container=
     
     # Generate PPTX
     generator = PPTXGenerator()
-    generator.generate(questions, str(output_pptx), include_answers=include_answers)
+    generator.generate(questions, str(output_pptx), include_answers=include_answers, start_question_number=start_question_number)
     
     # Verify output
     try:
@@ -274,16 +357,83 @@ def main():
         with col2:
             st.info(f"**Size:** {file_size_mb:.2f} MB")
         
+        # Get page count
+        total_pages = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+                tmp_file.write(uploaded_file.getbuffer())
+                tmp_path = tmp_file.name
+                reader = PdfReader(tmp_path)
+                total_pages = len(reader.pages)
+                os.unlink(tmp_path)
+                
+                st.info(f"**Pages:** {total_pages}")
+                if total_pages > 50:
+                    st.warning("⚠️ Large PDF detected. Consider using split feature for better results.")
+        except Exception as e:
+            st.warning(f"Could not read PDF page count: {e}")
+        
         if file_size_mb > 10:
             st.warning("⚠️ Large file detected. Processing may take longer.")
     
     # Options section
     st.header("⚙️ Options")
-    include_answers = st.checkbox(
-        "Include answer slides",
-        value=True,
-        help="If checked, answer slides will be included in the presentation. Uncheck to generate only question slides."
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        include_answers = st.checkbox(
+            "Include answer slides",
+            value=True,
+            help="If checked, answer slides will be included in the presentation."
+        )
+    
+    with col2:
+        start_number = st.number_input(
+            "Start question number",
+            min_value=1,
+            value=1,
+            help="Starting number for question numbering (e.g., 1 for Q1, 21 for Q21)"
+        )
+    
+    col3, col4 = st.columns(2)
+    with col3:
+        extract_year = st.checkbox(
+            "Extract exam information",
+            value=False,
+            help="Enable this to extract and display exam information from previous year question papers (e.g., [CBSE 2023 (57/1/1)], [CBSE Delhi 2015 [HOTS]])"
+        )
+    
+    # PDF Splitting section
+    st.header("✂️ PDF Splitting (for large files)")
+    use_split = st.checkbox(
+        "Split PDF into chunks",
+        value=False,
+        help="Enable this for large PDFs (>50 pages) to avoid connection timeouts. Specify page numbers where to split."
     )
+    
+    split_pages = None
+    if use_split and uploaded_file and total_pages:
+        st.info(f"💡 **Tip:** Split at page numbers where questions end (not in the middle of a question). PDF has {total_pages} pages.")
+        
+        split_input = st.text_input(
+            "Split at pages (comma-separated)",
+            placeholder="e.g., 25, 50, 75",
+            help="Enter page numbers where to split the PDF, separated by commas. Example: 25,50,75"
+        )
+        
+        if split_input:
+            try:
+                split_pages = [int(x.strip()) for x in split_input.split(',')]
+                # Validate page numbers
+                invalid_pages = [p for p in split_pages if p < 1 or p > total_pages]
+                if invalid_pages:
+                    st.error(f"❌ Invalid page numbers: {invalid_pages}. PDF has {total_pages} pages.")
+                    split_pages = None
+                else:
+                    st.success(f"✅ Will split at pages: {sorted(split_pages)}")
+            except ValueError:
+                st.error("❌ Please enter valid page numbers separated by commas (e.g., 25,50,75)")
+                split_pages = None
     
     # Process button
     st.markdown("---")
@@ -298,15 +448,45 @@ def main():
                     st.error("Failed to save uploaded file. Please try again.")
                     return
                 
-                # Create progress container
-                progress_container = st.container()
-                
-                # Process PDF
-                success, output_file, stats = process_pdf(
-                    pdf_path,
-                    include_answers=include_answers,
-                    progress_container=progress_container
-                )
+                # Handle PDF splitting if enabled
+                if use_split and split_pages:
+                    try:
+                        from step1_pdf_extraction import split_pdf_at_pages
+                        
+                        with st.status("✂️ **Splitting PDF...**", state="running") as status:
+                            status.write(f"Splitting PDF at pages: {split_pages}")
+                            split_files = split_pdf_at_pages(pdf_path, split_pages)
+                            
+                            if not split_files or len(split_files) == 0:
+                                st.error("❌ Failed to split PDF. Please check your split page numbers.")
+                                return
+                            
+                            status.write(f"✅ Created {len(split_files)} chunks")
+                            status.update(state="complete")
+                        
+                        # Process using multi-PDF workflow
+                        process_multiple_pdfs_streamlit(
+                            split_files,
+                            include_answers=include_answers,
+                            start_question_number=int(start_number),
+                            extract_year=extract_year
+                        )
+                    except Exception as e:
+                        st.error(f"❌ Error during PDF splitting: {e}")
+                        st.exception(e)
+                else:
+                    # Normal single PDF processing
+                    # Create progress container
+                    progress_container = st.container()
+                    
+                    # Process PDF
+                    success, output_file, stats = process_pdf(
+                        pdf_path,
+                        include_answers=include_answers,
+                        progress_container=progress_container,
+                        start_question_number=int(start_number),
+                        extract_year=extract_year
+                    )
                 
                 if success and output_file:
                     st.markdown("---")

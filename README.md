@@ -7,6 +7,8 @@ Automated PowerPoint presentation generator that extracts questions from PDF fil
 - **PDF Content Extraction**: Uses Claude API to extract text content from PDF files
 - **Question Parsing**: Intelligently identifies and structures questions from extracted content
 - **PPTX Generation**: Automatically creates PowerPoint presentations with formatted slides
+- **Multi-PDF Support**: Process multiple PDFs sequentially with continuous question numbering
+- **Custom Question Numbering**: Start question numbering from any number (e.g., Q20, Q50)
 
 ## Prerequisites
 
@@ -52,27 +54,48 @@ python generate_ppt_from_pdf.py --help
 
 ## Usage
 
-### Basic Usage
+### Single PDF Processing
 
 ```bash
 python generate_ppt_from_pdf.py "path/to/your/file.pdf"
 ```
 
+### Multiple PDF Processing (Recommended for Large PDFs)
+
+```bash
+python generate_ppt_from_multiple_pdfs.py "pdf1.pdf" "pdf2.pdf" "pdf3.pdf"
+```
+
+**With custom starting question number:**
+```bash
+python generate_ppt_from_multiple_pdfs.py "pdf1.pdf" "pdf2.pdf" --start-from 20
+```
+
 ### Examples
 
-**Windows:**
+**Single PDF (Windows):**
 ```bash
 python generate_ppt_from_pdf.py "C:\Users\YourName\Downloads\document.pdf"
 ```
 
-**Linux/Mac:**
+**Multiple PDFs (Windows):**
 ```bash
-python generate_ppt_from_pdf.py "/home/username/Downloads/document.pdf"
+python generate_ppt_from_multiple_pdfs.py "C:\Users\YourName\Downloads\pdf1.pdf" "C:\Users\YourName\Downloads\pdf2.pdf"
 ```
 
-**Relative path:**
+**Multiple PDFs with comma-separated:**
 ```bash
-python generate_ppt_from_pdf.py "document.pdf"
+python generate_ppt_from_multiple_pdfs.py "pdf1.pdf,pdf2.pdf,pdf3.pdf"
+```
+
+**Starting from Q50:**
+```bash
+python generate_ppt_from_multiple_pdfs.py "pdf1.pdf" "pdf2.pdf" --start-from 50
+```
+
+**Exclude answer slides:**
+```bash
+python generate_ppt_from_multiple_pdfs.py "pdf1.pdf" "pdf2.pdf" --no-answers
 ```
 
 ## Web Application (Streamlit)
@@ -142,21 +165,22 @@ The script generates:
 
 ```
 PPT Maker/
-├── streamlit_app.py             # Web application (NEW)
-├── generate_ppt_from_pdf.py    # Main script (command-line)
-├── step1_pdf_extraction.py     # PDF extraction module
-├── step2_question_parsing.py    # Question parsing module
-├── step3_pptx_new.py           # PPTX generation module
-├── config.yaml                 # Configuration (create from example)
-├── config.yaml.example         # Configuration template
-├── requirements.txt            # Python dependencies
-├── README.md                   # This file
-├── setup.bat                   # Windows setup script
-├── .streamlit/                 # Streamlit configuration
-│   ├── config.toml              # Streamlit settings
-│   └── secrets.toml.example    # Secrets template
-├── output/                     # Generated intermediate files
-└── PPTs/                       # Generated PowerPoint files
+├── streamlit_app.py                    # Web application
+├── generate_ppt_from_pdf.py           # Single PDF script (command-line)
+├── generate_ppt_from_multiple_pdfs.py # Multi-PDF script (command-line)
+├── step1_pdf_extraction.py            # PDF extraction module
+├── step2_question_parsing.py          # Question parsing module
+├── step3_pptx_new.py                  # PPTX generation module
+├── config.yaml                        # Configuration (create from example)
+├── config.yaml.example                # Configuration template
+├── requirements.txt                   # Python dependencies
+├── README.md                          # This file
+├── setup.bat                          # Windows setup script
+├── .streamlit/                        # Streamlit configuration
+│   ├── config.toml                     # Streamlit settings
+│   └── secrets.toml.example           # Secrets template
+├── output/                            # Generated intermediate files
+└── PPTs/                              # Generated PowerPoint files
 ```
 
 ## Troubleshooting
@@ -199,6 +223,8 @@ Double-click `setup.bat` to automatically:
 
 - The script processes PDFs in three steps (extraction, parsing, generation)
 - Each step may take 30-60 seconds depending on PDF size
+- For large PDFs (>100 pages), use `generate_ppt_from_multiple_pdfs.py` with split PDFs
+- Multi-PDF processing maintains continuous question numbering across PDFs
 - Generated PPTX files are saved in the `PPTs` folder
 - If a file with the same name exists, a number suffix will be added automatically
 

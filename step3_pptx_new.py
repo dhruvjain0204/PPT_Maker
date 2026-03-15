@@ -12,6 +12,7 @@ This implementation follows python-pptx best practices:
 Reference: https://python-pptx.readthedocs.io/en/latest/
 """
 import json
+import re
 from pathlib import Path
 from pptx import Presentation
 from pptx.util import Inches, Pt
@@ -330,13 +331,14 @@ class PPTXGenerator:
         
         return table
     
-    def create_question_slide(self, question_data: dict, question_number: str):
+    def create_question_slide(self, question_data: dict, question_number: str, exam_info: str = ""):
         """
         Create a question slide with question text, options, table, and diagram.
         
         Args:
             question_data: Content dictionary from parsed questions
             question_number: Question number (e.g., "Q1")
+            exam_info: Exam information (optional, e.g., "[CBSE 2023 (57/1/1)]")
         """
         slide = self.create_blank_slide()
         
@@ -347,7 +349,14 @@ class PPTXGenerator:
         
         # Build full question text with all components
         question_text = question_data.get('question_text', '')
-        full_text_parts = [f"{question_number}. {question_text}"]
+        # Question header without exam info
+        question_header = f"{question_number}. {question_text}"
+        
+        # Add exam info on the next line after question if available
+        if exam_info:
+            question_header += f"\n{exam_info}"
+        
+        full_text_parts = [question_header]
         
         # Add options if present (without bullets for multiple choice)
         options = question_data.get('options', [])
@@ -413,17 +422,25 @@ class PPTXGenerator:
             table_width = min(width, self.CONTENT_WIDTH)  # Use appropriate width
             self.add_table(slide, table, left, table_top, width=table_width)
     
-    def create_answer_slide(self, answer_text: str):
+    def create_answer_slide(self, answer_text: str, question_number: str):
         """
         Create an answer slide with answer text.
         
         Args:
             answer_text: Answer content
+            question_number: Question number (e.g., "Q4") - answer will match this number
         """
         slide = self.create_blank_slide()
         
-        answer_number = f"Ans{self.answer_counter}"
-        self.answer_counter += 1
+        # Extract numeric value from question_number (e.g., "Q4" → 4)
+        match = re.search(r'Q(\d+)', question_number)
+        if match:
+            question_num = int(match.group(1))
+            answer_number = f"Ans{question_num}"
+        else:
+            # Fallback: use answer_counter if question number pattern doesn't match
+            answer_number = f"Ans{self.answer_counter}"
+            self.answer_counter += 1
         
         full_answer = f"{answer_number}. {answer_text}"
         
@@ -456,7 +473,7 @@ class PPTXGenerator:
             bold=False
         )
     
-    def generate(self, questions: list, output_file: str, include_answers: bool = True):
+    def generate(self, questions: list, output_file: str, include_answers: bool = True, start_question_number: int = 1):
         """
         Generate PowerPoint presentation from parsed questions.
         
@@ -464,6 +481,7 @@ class PPTXGenerator:
             questions: List of question dictionaries
             output_file: Path to output PPTX file
             include_answers: Whether to include answer slides (default: True)
+            start_question_number: Starting question number (default: 1)
         """
         print("[INFO] Creating PowerPoint presentation...")
         if not include_answers:
@@ -471,8 +489,24 @@ class PPTXGenerator:
         
         # Process each question
         for q in questions:
-            question_number = q.get('question_number', 'Q?')
+            # Extract numeric value from existing question_number (e.g., "Q1" → 1)
+            original_question_number = q.get('question_number', 'Q?')
+            # Extract number from string like "Q1", "Q2", etc.
+            match = re.search(r'Q(\d+)', original_question_number)
+            if match:
+                original_num = int(match.group(1))
+                # Calculate new question number: start_question_number + (original_num - 1)
+                new_num = start_question_number + (original_num - 1)
+                question_number = f"Q{new_num}"
+            else:
+                # Fallback: use index-based numbering if pattern doesn't match
+                question_index = questions.index(q)
+                question_number = f"Q{start_question_number + question_index}"
+            
             slides = q.get('slides', [])
+            
+            # Get exam_info from question if available
+            exam_info = q.get('exam_info', '')
             
             # Process each slide for this question
             for slide_data in slides:
@@ -484,13 +518,13 @@ class PPTXGenerator:
                     self.create_passage_slide(passage)
                     
                 elif slide_type == 'question':
-                    self.create_question_slide(content, question_number)
+                    self.create_question_slide(content, question_number, exam_info)
                     
                 elif slide_type == 'answer':
                     # Skip answer slides if include_answers is False
                     if include_answers:
                         answer_text = content.get('answer_text', '')
-                        self.create_answer_slide(answer_text)
+                        self.create_answer_slide(answer_text, question_number)
                     # If include_answers is False, skip this slide entirely
         
         # Save presentation
