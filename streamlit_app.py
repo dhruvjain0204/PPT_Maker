@@ -372,6 +372,8 @@ def main():
                     st.warning("⚠️ Large PDF detected. Consider using split feature for better results.")
         except Exception as e:
             st.warning(f"Could not read PDF page count: {e}")
+            # Set total_pages to a default value so split input can still appear
+            total_pages = 999  # Large default to allow any reasonable split
         
         if file_size_mb > 10:
             st.warning("⚠️ Large file detected. Processing may take longer.")
@@ -408,31 +410,50 @@ def main():
     use_split = st.checkbox(
         "Split PDF into chunks",
         value=False,
-        help="Enable this for large PDFs (>50 pages) to avoid connection timeouts. Specify page numbers where to split."
+        help="Enable this for large PDFs (>50 pages) to avoid connection timeouts. Specify page numbers where to split (comma-separated, e.g., 20,40,60)."
     )
     
     split_pages = None
-    if use_split and uploaded_file and total_pages:
-        st.info(f"💡 **Tip:** Split at page numbers where questions end (not in the middle of a question). PDF has {total_pages} pages.")
+    if use_split and uploaded_file:
+        # Show input even if total_pages couldn't be determined
+        if total_pages:
+            st.info(f"💡 **Tip:** Split at page numbers where questions end (not in the middle of a question). PDF has {total_pages} pages.")
+        else:
+            st.info("💡 **Tip:** Split at page numbers where questions end (not in the middle of a question).")
         
         split_input = st.text_input(
             "Split at pages (comma-separated)",
-            placeholder="e.g., 25, 50, 75",
-            help="Enter page numbers where to split the PDF, separated by commas. Example: 25,50,75"
+            placeholder="e.g., 20, 40, 60",
+            help="Enter page numbers where to split the PDF, separated by commas. You can specify multiple split points. Example: 20,40,60 will split at pages 20, 40, and 60."
         )
         
         if split_input:
             try:
-                split_pages = [int(x.strip()) for x in split_input.split(',')]
-                # Validate page numbers
-                invalid_pages = [p for p in split_pages if p < 1 or p > total_pages]
-                if invalid_pages:
-                    st.error(f"❌ Invalid page numbers: {invalid_pages}. PDF has {total_pages} pages.")
+                # Parse comma-separated page numbers
+                split_pages = [int(x.strip()) for x in split_input.split(',') if x.strip()]
+                
+                if not split_pages:
+                    st.error("❌ Please enter at least one page number.")
                     split_pages = None
                 else:
-                    st.success(f"✅ Will split at pages: {sorted(split_pages)}")
+                    # Validate page numbers only if total_pages is known
+                    if total_pages and total_pages < 999:  # Only validate if we have real page count
+                        invalid_pages = [p for p in split_pages if p < 1 or p > total_pages]
+                        if invalid_pages:
+                            st.error(f"❌ Invalid page numbers: {invalid_pages}. PDF has {total_pages} pages.")
+                            split_pages = None
+                        else:
+                            st.success(f"✅ Will split at pages: {sorted(split_pages)}")
+                    else:
+                        # If total_pages unknown, just validate they're positive numbers
+                        invalid_pages = [p for p in split_pages if p < 1]
+                        if invalid_pages:
+                            st.error(f"❌ Invalid page numbers: {invalid_pages}. Please enter positive numbers.")
+                            split_pages = None
+                        else:
+                            st.success(f"✅ Will split at pages: {sorted(split_pages)}")
             except ValueError:
-                st.error("❌ Please enter valid page numbers separated by commas (e.g., 25,50,75)")
+                st.error("❌ Please enter valid page numbers separated by commas (e.g., 20,40,60)")
                 split_pages = None
     
     # Process button
